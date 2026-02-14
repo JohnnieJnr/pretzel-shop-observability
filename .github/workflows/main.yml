@@ -92,9 +92,32 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
 
+      - name: Check code scanning availability
+        id: code_scanning
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?per_page=1"
+          HTTP_CODE="$(curl -sS -o code-scanning-check.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_URL}")"
+
+          if [ "${HTTP_CODE}" = "200" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Code scanning::Code scanning API reachable; SARIF upload enabled."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            MESSAGE="$(jq -r '.message // "Unknown response"' code-scanning-check.json 2>/dev/null || echo "Unknown response")"
+            echo "::warning title=Code scanning unavailable::Skipping SARIF upload (${HTTP_CODE}: ${MESSAGE})."
+            echo "- Skipped SARIF upload (${HTTP_CODE}: ${MESSAGE})." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Upload Trivy scan results to code scanning
         id: upload_sarif
-        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        if: ${{ always() && steps.code_scanning.outputs.enabled == 'true' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
@@ -102,10 +125,10 @@ jobs:
           category: trivy-${{ matrix.name }}
 
       - name: Note code scanning upload status
-        if: ${{ always() && steps.upload_sarif.outcome == 'failure' }}
+        if: ${{ always() && steps.code_scanning.outputs.enabled == 'true' && steps.upload_sarif.outcome == 'failure' }}
         run: |
-          echo "::warning title=Code scanning upload skipped::Code scanning is likely disabled for this repository. Enable it in repository settings to ingest SARIF."
-          echo "- SARIF upload failed because code scanning is not enabled for this repository." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Code scanning upload failed::SARIF upload failed even though the API check passed. Check action logs and repository security settings."
+          echo "- SARIF upload failed after code scanning pre-check passed." >> "$GITHUB_STEP_SUMMARY"
           echo "- Trivy scan still ran; check this job summary and logs for findings." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Annotate Trivy findings
