@@ -1,0 +1,133 @@
+name: Main Workflow
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  discover:
+    name: Discover Build Targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      has_targets: ${{ steps.discover.outputs.has_targets }}
+      target_count: ${{ steps.discover.outputs.target_count }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Discover directories with Dockerfiles
+        id: discover
+        run: python .github/utils/discover_docker_targets.py --repo-root .
+
+      - name: Print discovered matrix
+        run: |
+          echo "Discovered targets: ${{ steps.discover.outputs.target_count }}"
+          echo '${{ steps.discover.outputs.matrix }}'
+
+  metrics-pipeline:
+    name: Metrics Pipeline
+    needs: discover
+    if: ${{ needs.discover.outputs.has_targets == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Define image tags
+        id: tags
+        run: |
+          REPO_LOWER="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          IMAGE_BASE="ghcr.io/${REPO_LOWER}/${{ matrix.name }}"
+          echo "image_base=$IMAGE_BASE" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=$IMAGE_BASE:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=$IMAGE_BASE:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build image from Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          load: true
+          push: false
+          tags: |
+            ${{ steps.tags.outputs.sha_tag }}
+            ${{ steps.tags.outputs.latest_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.tags.outputs.sha_tag }}
+          format: sarif
+          output: trivy-results.sarif
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Upload Trivy scan results to code scanning
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ matrix.name }}
+
+      - name: Annotate Trivy findings
+        if: always()
+        run: |
+          if [ ! -f trivy-results.sarif ]; then
+            echo "::warning title=Trivy scan::SARIF report missing for ${{ matrix.context }}"
+            exit 0
+          fi
+
+          FINDINGS="$(jq '.runs[0].results | length' trivy-results.sarif)"
+          echo "### Trivy scan: \`${{ matrix.context }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`${{ steps.tags.outputs.sha_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Findings: \`${FINDINGS}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$FINDINGS" -gt 0 ]; then
+            echo "::warning title=Trivy findings in ${{ matrix.context }}::Found ${FINDINGS} HIGH/CRITICAL vulnerabilities."
+          else
+            echo "::notice title=Trivy scan in ${{ matrix.context }}::No HIGH/CRITICAL vulnerabilities found."
+          fi
+
+      - name: Push image to GHCR
+        if: success()
+        run: |
+          docker push "${{ steps.tags.outputs.sha_tag }}"
+          docker push "${{ steps.tags.outputs.latest_tag }}"
+
+  no-targets:
+    name: No Docker Targets
+    needs: discover
+    if: ${{ needs.discover.outputs.has_targets != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: No-op
+        run: echo "No Dockerfile targets found outside .github."
