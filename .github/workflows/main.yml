@@ -75,14 +75,14 @@ jobs:
           file: ${{ matrix.dockerfile }}
           load: true
           push: false
-          tags: ${{ steps.tags.outputs.latest_tag }}
+          tags: ghcr.io/${{ env.LOWER_REPO }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Run Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.tags.outputs.latest_tag }}
+          image-ref: ghcr.io/${{ env.LOWER_REPO }}:latest
           format: sarif
           output: trivy-results.sarif
           vuln-type: os,library
@@ -147,6 +147,79 @@ jobs:
           else
             echo "::notice title=Trivy scan in ${{ matrix.context }}::No HIGH/CRITICAL vulnerabilities found."
           fi
+
+      - name: Remove SHA-tagged GHCR versions
+        if: ${{ always() && steps.build_image.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/github-script@v8
+        env:
+          PACKAGE_NAME: ${{ github.event.repository.name }}/${{ matrix.name }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const packageName = process.env.PACKAGE_NAME.toLowerCase();
+            const shaTagRegex = /^[0-9a-f]{40}$/;
+
+            async function listVersions() {
+              try {
+                const versions = await github.paginate(
+                  github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
+                  {
+                    username: owner,
+                    package_type: "container",
+                    package_name: packageName,
+                    per_page: 100
+                  }
+                );
+                return { scope: "user", versions };
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                const versions = await github.paginate(
+                  github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg,
+                  {
+                    org: owner,
+                    package_type: "container",
+                    package_name: packageName,
+                    per_page: 100
+                  }
+                );
+                return { scope: "org", versions };
+              }
+            }
+
+            async function deleteVersion(scope, versionId) {
+              if (scope === "user") {
+                await github.rest.packages.deletePackageVersionForUser({
+                  username: owner,
+                  package_type: "container",
+                  package_name: packageName,
+                  package_version_id: versionId
+                });
+                return;
+              }
+
+              await github.rest.packages.deletePackageVersionForOrg({
+                org: owner,
+                package_type: "container",
+                package_name: packageName,
+                package_version_id: versionId
+              });
+            }
+
+            const { scope, versions } = await listVersions();
+            let deleted = 0;
+
+            for (const version of versions) {
+              const tags = version?.metadata?.container?.tags || [];
+              if (!tags.length) continue;
+              if (!tags.some((tag) => shaTagRegex.test(tag))) continue;
+
+              await deleteVersion(scope, version.id);
+              deleted += 1;
+            }
+
+            core.notice(`Package ${packageName}: deleted ${deleted} SHA-tagged version(s).`);
+            await core.summary.addRaw(`Removed ${deleted} SHA-tagged version(s) from ${packageName}.`).write();
 
       - name: Push image to GHCR
         if: ${{ always() && steps.build_image.outcome == 'success' }}
