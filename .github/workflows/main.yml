@@ -93,11 +93,20 @@ jobs:
           exit-code: "1"
 
       - name: Upload Trivy scan results to code scanning
+        id: upload_sarif
         if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy-${{ matrix.name }}
+
+      - name: Note code scanning upload status
+        if: ${{ always() && steps.upload_sarif.outcome == 'failure' }}
+        run: |
+          echo "::warning title=Code scanning upload skipped::Code scanning is likely disabled for this repository. Enable it in repository settings to ingest SARIF."
+          echo "- SARIF upload failed because code scanning is not enabled for this repository." >> "$GITHUB_STEP_SUMMARY"
+          echo "- Trivy scan still ran; check this job summary and logs for findings." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Annotate Trivy findings
         if: always()
