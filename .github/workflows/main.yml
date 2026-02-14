@@ -146,11 +146,6 @@ jobs:
             echo "::notice title=Trivy scan in ${{ matrix.context }}::No HIGH/CRITICAL vulnerabilities found."
           fi
 
-      - name: Push image to GHCR
-        if: ${{ always() && steps.build_image.outcome == 'success' }}
-        run: |
-          docker push "${{ env.IMAGE_TAG }}"
-
       - name: Remove SHA-tagged GHCR versions
         if: ${{ always() && steps.build_image.outcome == 'success' }}
         continue-on-error: true
@@ -215,7 +210,6 @@ jobs:
             for (const version of versions) {
               const tags = version?.metadata?.container?.tags || [];
               if (!tags.length) continue;
-              if (tags.includes("latest")) continue;
               if (!tags.some((tag) => shaTagRegex.test(tag))) continue;
 
               await deleteVersion(scope, version.id);
@@ -223,13 +217,12 @@ jobs:
             }
 
             core.notice(`Package ${packageName}: deleted ${deleted} SHA-tagged version(s).`);
-            core.summary.addRaw(`Removed ${deleted} SHA-tagged version(s) from ${packageName}.`).write();
+            await core.summary
+              .addRaw(`Removed ${deleted} SHA-tagged version(s) from ${packageName}.`)
+              .write();
 
-  no-targets:
-    name: No Docker Targets
-    needs: discover
-    if: ${{ needs.discover.outputs.has_targets != 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: No-op
-        run: echo "No Dockerfile targets found outside .github."
+      - name: Push image to GHCR
+        if: ${{ always() && steps.build_image.outcome == 'success' }}
+        run: |
+          docker push "${{ env.IMAGE_TAG }}"
+
