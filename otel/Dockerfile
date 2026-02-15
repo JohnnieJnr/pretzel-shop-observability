@@ -4,4 +4,4 @@ WORKDIR /app
 
 COPY config.yml .
 
-CMD ["--config", "/etc/config.yml"]
+CMD ["--config", "/app/config.yml"]

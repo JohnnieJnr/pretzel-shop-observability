@@ -70,14 +70,14 @@ jobs:
           file: ${{ matrix.dockerfile }}
           load: true
           push: false
-          tags: ghcr.io/${{ env.LOWER_REPO }}/${{ matrix.name }}:latest
+          tags: ghcr.io/${{ env.LOWER_REPO }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Run Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/${{ env.LOWER_REPO }}/${{ matrix.name }}:latest
+          image-ref: ghcr.io/${{ env.LOWER_REPO }}:latest
           format: sarif
           output: trivy-results.sarif
           vuln-type: os,library
@@ -134,7 +134,7 @@ jobs:
 
           FINDINGS="$(jq '.runs[0].results | length' trivy-results.sarif)"
           echo "### Trivy scan: \`${{ matrix.context }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: \`ghcr.io/${{ env.LOWER_REPO }}/${{ matrix.name }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: \`ghcr.io/${{ env.LOWER_REPO }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Findings: \`${FINDINGS}\`" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$FINDINGS" -gt 0 ]; then
@@ -146,7 +146,7 @@ jobs:
       - name: Push image to GHCR
         if: ${{ always() && steps.build_image.outcome == 'success' }}
         run: |
-          docker push ghcr.io/${{ env.LOWER_REPO }}/${{ matrix.name }}:latest
+          docker push ghcr.io/${{ env.LOWER_REPO }}:latest
 
   no-targets:
     name: No Docker Targets
