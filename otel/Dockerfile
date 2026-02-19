@@ -1,7 +1,8 @@
-FROM otel/opentelemetry-collector:latest
+FROM otel/opentelemetry-collector-contrib:0.97.0
 
-WORKDIR /app
+COPY --chown=10001:10001 config.yml /etc/otelcol/config.yaml
 
-COPY config.yml .
+USER 10001
 
-CMD ["--config", "/app/config.yml"]
+ENTRYPOINT ["/otelcontribcol"]
+CMD ["--config=/etc/otelcol/config.yaml"]
