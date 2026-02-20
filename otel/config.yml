@@ -14,9 +14,9 @@ receivers:
 processors:
   batch: {}
 
-exporters:
-  logging:
-    verbosity: detailed
+# exporters:
+#   debug:
+#     verbosity: detailed
   # otlp/tempo:
   #   endpoint: tempo:4319
   #   tls:
@@ -31,8 +31,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [logging]
+      exporters: [debug]
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [logging]
+      exporters: [debug]
