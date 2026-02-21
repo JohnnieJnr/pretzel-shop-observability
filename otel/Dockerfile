@@ -1,7 +1,7 @@
-FROM otel/opentelemetry-collector:latest
+FROM otel/opentelemetry-collector-contrib:latest
 
 WORKDIR /app
 
-COPY config.yml ./config.yml
+COPY config.yml .
 
 CMD ["--config", "/app/config.yml"]
