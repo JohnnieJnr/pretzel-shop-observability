@@ -52,6 +52,9 @@ jobs:
       - name: Set lowercase repo name
         run: echo "LOWER_REPO=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
+      - name: Set image name for target
+        run: echo "IMAGE_NAME=${{ env.LOWER_REPO }}-${{ matrix.name }}" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -70,7 +73,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           load: true
           push: false
-          tags: ghcr.io/${{ env.LOWER_REPO }}:latest
+          tags: ghcr.io/${{ env.IMAGE_NAME }}:latest
           no-cache: true
 
       - name: Detect Trivy ignore file
@@ -92,7 +95,7 @@ jobs:
       - name: Run Trivy scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/${{ env.LOWER_REPO }}:latest
+          image-ref: ghcr.io/${{ env.IMAGE_NAME }}:latest
           format: sarif
           output: trivy-results.sarif
           vuln-type: os,library
@@ -166,7 +169,7 @@ jobs:
       - name: Push image to GHCR
         if: ${{ always() && steps.build_image.outcome == 'success' }}
         run: |
-          docker push ghcr.io/${{ env.LOWER_REPO }}:latest
+          docker push ghcr.io/${{ env.IMAGE_NAME }}:latest
 
   no-targets:
     name: No Docker Targets
