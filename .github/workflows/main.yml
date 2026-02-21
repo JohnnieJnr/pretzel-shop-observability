@@ -71,8 +71,23 @@ jobs:
           load: true
           push: false
           tags: ghcr.io/${{ env.LOWER_REPO }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          no-cache: true
+
+      - name: Detect Trivy ignore file
+        id: trivy_ignore
+        run: |
+          # Trivy expects repo‑relative paths; always prefix with ./ for clarity
+          if [ "${{ matrix.context }}" = "." ]; then
+            IGNORE_FILE="./.trivyignore"
+          else
+            IGNORE_FILE="./${{ matrix.context }}/.trivyignore"
+          fi
+          if [ -f "$IGNORE_FILE" ]; then
+            echo "trivyignores=$IGNORE_FILE" >> "$GITHUB_OUTPUT"
+            echo "Using Trivy ignore file at $IGNORE_FILE"
+          else
+            echo "No Trivy ignore file for ${{ matrix.context }}"
+          fi
 
       - name: Run Trivy scan
         uses: aquasecurity/trivy-action@master
@@ -83,6 +98,7 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          trivyignores: ${{ steps.trivy_ignore.outputs.trivyignores }}
           exit-code: "1"
 
       - name: Check code scanning availability
@@ -138,7 +154,11 @@ jobs:
           echo "- Findings: \`${FINDINGS}\`" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$FINDINGS" -gt 0 ]; then
-            echo "::warning title=Trivy findings in ${{ matrix.context }}::Found ${FINDINGS} HIGH/CRITICAL vulnerabilities."
+            FIRST_ISSUE="$(jq -r '.runs[0].results[0] | "\(.ruleId): \(.message.text // \"No description provided\")"' trivy-results.sarif)"
+            # keep the annotation concise
+            FIRST_ISSUE_TRIMMED="$(echo \"$FIRST_ISSUE\" | tr -d '\n' | head -c 200)"
+            echo "::warning title=Trivy findings in ${{ matrix.context }}::Found ${FINDINGS} HIGH/CRITICAL vulnerabilities. Top issue: ${FIRST_ISSUE_TRIMMED}"
+            echo "- Top issue: \`${FIRST_ISSUE_TRIMMED}\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::notice title=Trivy scan in ${{ matrix.context }}::No HIGH/CRITICAL vulnerabilities found."
           fi
