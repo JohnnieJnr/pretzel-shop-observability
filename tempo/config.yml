@@ -17,9 +17,9 @@ ingester:
 
 metrics_generator:
   storage:
-    path: /var/tempo/metrics-generator
+    path: /tmp/tempo/metrics-generator
   traces_storage:
-    path: /var/tempo/metrics-generator-traces
+    path: /tmp/tempo/metrics-generator-traces
   processor:
     local_blocks:
       filter_server_spans: false
@@ -28,9 +28,9 @@ storage:
   trace:
     backend: local
     local:
-      path: /var/tempo/traces
+      path: /tmp/tempo/traces
     wal:
-      path: /var/tempo/wal
+      path: /tmp/tempo/wal
 
 overrides:
   defaults:
