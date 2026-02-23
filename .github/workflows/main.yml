@@ -93,6 +93,8 @@ jobs:
           fi
 
       - name: Run Trivy scan
+        id: trivy_scan
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ env.IMAGE_NAME }}:latest
@@ -157,7 +159,7 @@ jobs:
           echo "- Findings: \`${FINDINGS}\`" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$FINDINGS" -gt 0 ]; then
-            FIRST_ISSUE="$(jq -r '.runs[0].results[0] | "\(.ruleId): \(.message.text // \"No description provided\")"' trivy-results.sarif)"
+            FIRST_ISSUE="$(jq -r '.runs[0].results[0] | (.ruleId + ": " + (.message.text // "No description provided"))' trivy-results.sarif)"
             # keep the annotation concise
             FIRST_ISSUE_TRIMMED="$(echo \"$FIRST_ISSUE\" | tr -d '\n' | head -c 200)"
             echo "::warning title=Trivy findings in ${{ matrix.context }}::Found ${FINDINGS} HIGH/CRITICAL vulnerabilities. Top issue: ${FIRST_ISSUE_TRIMMED}"
@@ -166,8 +168,114 @@ jobs:
             echo "::notice title=Trivy scan in ${{ matrix.context }}::No HIGH/CRITICAL vulnerabilities found."
           fi
 
+      - name: Summarize Trivy results (table)
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          sarif_path = Path("trivy-results.sarif")
+          if not sarif_path.exists():
+              raise SystemExit("SARIF report not found")
+
+          data = json.loads(sarif_path.read_text())
+          runs = data.get("runs", [])
+          if not runs:
+              raise SystemExit("No runs in SARIF report")
+
+          run = runs[0]
+          rules = {rule.get("id"): rule for rule in run.get("tool", {}).get("driver", {}).get("rules", [])}
+          results = run.get("results", [])
+
+          severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+          counts = {sev: 0 for sev in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
+
+          rows = []
+          for res in results:
+              rule_id = res.get("ruleId", "-")
+              rule = rules.get(rule_id, {})
+              props = rule.get("properties", {})
+
+              severity = (props.get("severity") or res.get("level") or "UNKNOWN").upper()
+              if severity in counts:
+                  counts[severity] += 1
+
+              pkg = props.get("packageName") or "-"
+              status = props.get("status") or ("fixed" if props.get("fixedVersion") else "needs-fix")
+              installed = props.get("packageVersion") or "-"
+              fixed = props.get("fixedVersion") or "-"
+              title = (
+                  (rule.get("shortDescription", {}) or {}).get("text")
+                  or rule.get("name")
+                  or (rule.get("fullDescription", {}) or {}).get("text")
+                  or rule_id
+              )
+              title = " ".join(str(title).split())
+              if len(title) > 90:
+                  title = title[:87] + "..."
+
+              rows.append((pkg, rule_id, severity, status, installed, fixed, title))
+
+          order_index = {sev: idx for idx, sev in enumerate(severity_order)}
+          rows.sort(key=lambda r: (order_index.get(r[2], len(order_index)), r[1]))
+
+          total = len(rows)
+          headers = [
+              "Library",
+              "Vulnerability",
+              "Severity",
+              "Status",
+              "Installed Version",
+              "Fixed Version",
+              "Title",
+          ]
+
+          table = [headers] + rows
+          widths = [max(len(str(row[i])) for row in table) for i in range(len(headers))]
+
+          def border(fill="-"):
+              return "+" + "+".join(fill * (widths[i] + 2) for i in range(len(headers))) + "+"
+
+          def fmt(row):
+              return "| " + " | ".join(str(row[i]).ljust(widths[i]) for i in range(len(headers))) + " |"
+
+          lines = []
+          lines.append(
+              f"Total: {total} (LOW: {counts['LOW']}, MEDIUM: {counts['MEDIUM']}, HIGH: {counts['HIGH']}, CRITICAL: {counts['CRITICAL']})"
+          )
+          lines.append("")
+          lines.append(border())
+          lines.append(fmt(headers))
+          lines.append(border())
+          for row in rows:
+              lines.append(fmt(row))
+          if rows:
+              lines.append(border())
+          else:
+              # still close the table even when empty
+              lines.append(border())
+
+          table_text = "\n".join(lines) + "\n"
+          print(table_text)
+
+          Path("trivy-table.txt").write_text(table_text)
+          PY
+
+                    {
+                      echo "" >> "$GITHUB_STEP_SUMMARY"
+                      echo "#### Trivy scan summary (tabular)" >> "$GITHUB_STEP_SUMMARY"
+                      cat trivy-table.txt >> "$GITHUB_STEP_SUMMARY"
+                    }
+
+      - name: Fail if Trivy found vulnerabilities
+        if: ${{ always() && steps.trivy_scan.outcome == 'failure' }}
+        run: |
+          echo "::error title=Trivy detected HIGH/CRITICAL issues::See the Trivy table above for details."
+          exit 1
+
       - name: Push image to GHCR
-        if: ${{ always() && steps.build_image.outcome == 'success' }}
+        if: ${{ always() && steps.build_image.outcome == 'success' && steps.trivy_scan.outcome == 'success' }}
         run: |
           docker push ghcr.io/${{ env.IMAGE_NAME }}:latest
 
