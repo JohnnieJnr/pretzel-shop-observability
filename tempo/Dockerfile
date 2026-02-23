@@ -6,13 +6,13 @@ USER root
 # Provide config at the standard path
 COPY config.yml /etc/tempo.yaml
 
-# Ensure trace storage paths exist and are writable by the runtime user
+# Ensure trace storage paths exist; make them world-writable (rootless build cannot chown)
 RUN mkdir -p \
       /var/tempo/metrics-generator \
       /var/tempo/metrics-generator-traces \
       /var/tempo/traces \
       /var/tempo/wal \
-    && chown -R 10001:10001 /var/tempo
+    && chmod -R 777 /var/tempo
 
 # Drop back to the default non-root user from the base image
 USER 10001
