@@ -86,7 +86,7 @@ jobs:
             IGNORE_FILE="./${{ matrix.context }}/.trivyignore"
           fi
           if [ -f "$IGNORE_FILE" ]; then
-            echo "trivyignores=$IGNORE_FILE" >> "$GITHUB_OUTPUT"
+            python3 .github/utils/workflow_outputs.py --set "trivyignores=$IGNORE_FILE"
             echo "Using Trivy ignore file at $IGNORE_FILE"
           else
             echo "No Trivy ignore file for ${{ matrix.context }}"
@@ -120,10 +120,10 @@ jobs:
             "${API_URL}")"
 
           if [ "${HTTP_CODE}" = "200" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            python3 .github/utils/workflow_outputs.py --set "enabled=true"
             echo "::notice title=Code scanning::Code scanning API reachable; SARIF upload enabled."
           else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            python3 .github/utils/workflow_outputs.py --set "enabled=false"
             MESSAGE="$(jq -r '.message // "Unknown response"' code-scanning-check.json 2>/dev/null || echo "Unknown response")"
             echo "::warning title=Code scanning unavailable::Skipping SARIF upload (${HTTP_CODE}: ${MESSAGE})."
             echo "- Skipped SARIF upload (${HTTP_CODE}: ${MESSAGE})." >> "$GITHUB_STEP_SUMMARY"
@@ -153,120 +153,133 @@ jobs:
             exit 0
           fi
 
-          FINDINGS="$(jq '.runs[0].results | length' trivy-results.sarif)"
-          echo "### Trivy scan: \`${{ matrix.context }}\`" >> "$GITHUB_STEP_SUMMARY"
+          # Count HIGH + CRITICAL only
+          FINDINGS=$(jq '
+            [
+              .runs[0].results[]
+              | . as $r
+              | .ruleId as $id
+              | .level as $lvl
+              | select($lvl == "error" or $lvl == "warning")
+            ] | length
+          ' trivy-results.sarif)
+
+          echo "### 🔎 Trivy scan: \`${{ matrix.context }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: \`ghcr.io/${{ env.LOWER_REPO }}:latest\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Findings: \`${FINDINGS}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- HIGH/CRITICAL findings: \`${FINDINGS}\`" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$FINDINGS" -gt 0 ]; then
-            FIRST_ISSUE="$(jq -r '.runs[0].results[0] | (.ruleId + ": " + (.message.text // "No description provided"))' trivy-results.sarif)"
-            # keep the annotation concise
-            FIRST_ISSUE_TRIMMED="$(echo \"$FIRST_ISSUE\" | tr -d '\n' | head -c 200)"
-            echo "::warning title=Trivy findings in ${{ matrix.context }}::Found ${FINDINGS} HIGH/CRITICAL vulnerabilities. Top issue: ${FIRST_ISSUE_TRIMMED}"
-            echo "- Top issue: \`${FIRST_ISSUE_TRIMMED}\`" >> "$GITHUB_STEP_SUMMARY"
+
+            # Get highest severity issue (error first, then warning)
+            TOP_ISSUE=$(jq -r '
+              .runs[0].results
+              | map(select(.level == "error" or .level == "warning"))
+              | sort_by(.level)        # "error" < "warning"
+              | .[0]
+              | (.ruleId + ": " + (.message.text // "No description provided"))
+            ' trivy-results.sarif)
+
+            TOP_ISSUE_TRIMMED=$(echo "$TOP_ISSUE" | tr -d '\n' | head -c 200)
+
+            echo "::warning title=Trivy findings in ${{ matrix.context }}::Found ${FINDINGS} HIGH/CRITICAL vulnerabilities. Top issue: ${TOP_ISSUE_TRIMMED}"
+
+            echo "- Top issue: \`${TOP_ISSUE_TRIMMED}\`" >> "$GITHUB_STEP_SUMMARY"
+
           else
             echo "::notice title=Trivy scan in ${{ matrix.context }}::No HIGH/CRITICAL vulnerabilities found."
+            echo "✅ No HIGH/CRITICAL vulnerabilities found." >> "$GITHUB_STEP_SUMMARY"
           fi
-
-      - name: Summarize Trivy results (table)
+      - name: Summarize Trivy results (PR friendly)
         if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
-          sarif_path = Path("trivy-results.sarif")
-          if not sarif_path.exists():
-              raise SystemExit("SARIF report not found")
+          data = json.loads(Path("trivy-results.sarif").read_text())
+          run = data.get("runs", [{}])[0]
 
-          data = json.loads(sarif_path.read_text())
-          runs = data.get("runs", [])
-          if not runs:
-              raise SystemExit("No runs in SARIF report")
-
-          run = runs[0]
-          rules = {rule.get("id"): rule for rule in run.get("tool", {}).get("driver", {}).get("rules", [])}
+          rules = {r.get("id"): r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
           results = run.get("results", [])
 
-          severity_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
-          counts = {sev: 0 for sev in ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
+          level_map = {
+              "error": "HIGH",
+              "warning": "MEDIUM",
+              "note": "LOW",
+          }
 
-          rows = []
+          findings = []
+          seen = set()
+          counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+
           for res in results:
               rule_id = res.get("ruleId", "-")
               rule = rules.get(rule_id, {})
               props = rule.get("properties", {})
 
-              severity = (props.get("severity") or res.get("level") or "UNKNOWN").upper()
+              pkg = props.get("packageName", "-")
+              installed = props.get("packageVersion", "-")
+              fixed = props.get("fixedVersion", "-")
+              status = "fixed" if fixed else "needs-fix"
+
+              severity = props.get("severity")
+              if severity:
+                  severity = severity.upper()
+              else:
+                  severity = level_map.get(res.get("level", "").lower(), "UNKNOWN")
+
+              key = (pkg, rule_id)
+              if key in seen:
+                  continue
+              seen.add(key)
+
               if severity in counts:
                   counts[severity] += 1
 
-              pkg = props.get("packageName") or "-"
-              status = props.get("status") or ("fixed" if props.get("fixedVersion") else "needs-fix")
-              installed = props.get("packageVersion") or "-"
-              fixed = props.get("fixedVersion") or "-"
               title = (
-                  (rule.get("shortDescription", {}) or {}).get("text")
+                  rule.get("shortDescription", {}).get("text")
                   or rule.get("name")
-                  or (rule.get("fullDescription", {}) or {}).get("text")
                   or rule_id
               )
               title = " ".join(str(title).split())
-              if len(title) > 90:
-                  title = title[:87] + "..."
+              if len(title) > 100:
+                  title = title[:97] + "..."
 
-              rows.append((pkg, rule_id, severity, status, installed, fixed, title))
+              findings.append((pkg, rule_id, severity, status, installed, fixed, title))
 
-          order_index = {sev: idx for idx, sev in enumerate(severity_order)}
-          rows.sort(key=lambda r: (order_index.get(r[2], len(order_index)), r[1]))
+          order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+          findings.sort(key=lambda x: (order.get(x[2], 99), x[1]))
 
-          total = len(rows)
-          headers = [
-              "Library",
-              "Vulnerability",
-              "Severity",
-              "Status",
-              "Installed Version",
-              "Fixed Version",
-              "Title",
-          ]
+          summary_lines = []
+          summary_lines.append("## 🔎 Trivy Scan Summary\n")
 
-          table = [headers] + rows
-          widths = [max(len(str(row[i])) for row in table) for i in range(len(headers))]
-
-          def border(fill="-"):
-              return "+" + "+".join(fill * (widths[i] + 2) for i in range(len(headers))) + "+"
-
-          def fmt(row):
-              return "| " + " | ".join(str(row[i]).ljust(widths[i]) for i in range(len(headers))) + " |"
-
-          lines = []
-          lines.append(
-              f"Total: {total} (LOW: {counts['LOW']}, MEDIUM: {counts['MEDIUM']}, HIGH: {counts['HIGH']}, CRITICAL: {counts['CRITICAL']})"
+          total = len(findings)
+          summary_lines.append(
+              f"**Total:** {total}  \n"
+              f"**CRITICAL:** {counts['CRITICAL']} | "
+              f"**HIGH:** {counts['HIGH']} | "
+              f"**MEDIUM:** {counts['MEDIUM']} | "
+              f"**LOW:** {counts['LOW']}\n"
           )
-          lines.append("")
-          lines.append(border())
-          lines.append(fmt(headers))
-          lines.append(border())
-          for row in rows:
-              lines.append(fmt(row))
-          if rows:
-              lines.append(border())
+
+          if not findings:
+              summary_lines.append("✅ No vulnerabilities found.\n")
           else:
-              # still close the table even when empty
-              lines.append(border())
+              summary_lines.append("| Library | CVE | Severity | Status | Installed | Fixed | Title |")
+              summary_lines.append("|---------|-----|----------|--------|------------|--------|-------|")
 
-          table_text = "\n".join(lines) + "\n"
-          print(table_text)
+              for row in findings:
+                  summary_lines.append(
+                      f"| {row[0]} | {row[1]} | {row[2]} | {row[3]} | {row[4]} | {row[5]} | {row[6]} |"
+                  )
 
-          Path("trivy-table.txt").write_text(table_text)
+          summary = "\n".join(summary_lines) + "\n"
+
+          print(summary)
+          Path("trivy-summary.md").write_text(summary)
           PY
 
-                    {
-                      echo "" >> "$GITHUB_STEP_SUMMARY"
-                      echo "#### Trivy scan summary (tabular)" >> "$GITHUB_STEP_SUMMARY"
-                      cat trivy-table.txt >> "$GITHUB_STEP_SUMMARY"
-                    }
+          cat trivy-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fail if Trivy found vulnerabilities
         if: ${{ always() && steps.trivy_scan.outcome == 'failure' }}
