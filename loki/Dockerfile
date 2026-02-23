@@ -1,5 +1,7 @@
 FROM grafana/loki:latest
 
-COPY config.yml .
+# Provide explicit config file location for the Loki process
+COPY config.yml /etc/loki/config.yaml
 
-ENTRYPOINT ["/usr/bin/loki", "./config.yaml"]
+# Start Loki with the provided config
+ENTRYPOINT ["/usr/bin/loki", "-config.file=/etc/loki/config.yaml"]
