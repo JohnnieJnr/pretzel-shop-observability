@@ -128,28 +128,14 @@ jobs:
             echo "- Skipped SARIF upload (${HTTP_CODE}: ${MESSAGE})." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Upload Trivy SARIF quietly
-        if: ${{ always() && steps.code_scanning.outputs.enabled == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # <-- required
-        run: |
-          if [ ! -f trivy-results.sarif ]; then
-            echo "⚠️ SARIF report not found, skipping upload."
-            exit 0
-          fi
-
-          echo "Uploading Trivy SARIF for ${{ matrix.name }}…"
-
-          if ! gh api \
-            -X POST /repos/${{ github.repository }}/code-scanning/sarifs \
-            -F sarif=@trivy-results.sarif \
-            -F category=trivy-${{ matrix.name }} \
-            > /dev/null; then
-              echo "❌ Failed to upload SARIF"
-              exit 1
-          fi
-
-          echo "✅ SARIF uploaded successfully."
+      - name: Upload Trivy scan results to code scanning 
+        id: upload_sarif 
+        if: ${{ always() && steps.code_scanning.outputs.enabled == 'true' }} 
+        continue-on-error: true 
+        uses: github/codeql-action/upload-sarif@v4 
+        with: 
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ matrix.name }}
 
       - name: Annotate Trivy findings
         if: always()
