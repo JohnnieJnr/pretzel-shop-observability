@@ -1,5 +1,21 @@
 FROM grafana/tempo:latest
 
-COPY config.yml .
+# Use root to set up writable paths, then drop back to the image user (10001)
+USER root
 
-ENTRYPOINT ["/tempo", "./config.yml"]
+# Provide config at the standard path
+COPY config.yml /etc/tempo.yaml
+
+# Ensure trace storage paths exist and are writable by the runtime user
+RUN mkdir -p \
+      /var/tempo/metrics-generator \
+      /var/tempo/metrics-generator-traces \
+      /var/tempo/traces \
+      /var/tempo/wal \
+    && chown -R 10001:10001 /var/tempo
+
+# Drop back to the default non-root user from the base image
+USER 10001
+
+# Start Tempo with the explicit config file
+ENTRYPOINT ["/tempo", "-config.file=/etc/tempo.yaml"]
