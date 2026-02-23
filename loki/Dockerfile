@@ -1,4 +1,4 @@
-FROM grafana/loki:2.9.4
+FROM grafana/loki:latest
 
 COPY config.yml .
 

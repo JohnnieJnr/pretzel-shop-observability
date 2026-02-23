@@ -1,4 +1,4 @@
-FROM grafana/tempo:2.4.1
+FROM grafana/tempo:latest
 
 COPY config.yml .
 
